@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""
-Run All: starts FastAPI (Uvicorn) + Streamlit, checks health, and opens the UI.
-Place this file at the ROOT of the project and run:  python run_all.py
-"""
+"""Run All: start FastAPI (Uvicorn) + Streamlit or a lite API-only mode."""
 
+import argparse
 import os
-import sys
-import time
 import signal
 import subprocess
+import sys
+import time
 import webbrowser
 from pathlib import Path
-from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -23,8 +21,24 @@ UI_PORT = int(os.getenv("UI_PORT", "8501"))
 TELETRIAGEM_API_BASE = os.getenv("TELETRIAGEM_API_BASE", f"http://{API_HOST}:{API_PORT}")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 
-UVICORN_CMD = ["uvicorn", "backend.app.main:app", "--reload", "--host", API_HOST, "--port", str(API_PORT)]
-STREAMLIT_CMD = ["streamlit", "run", "frontend/home.py", "--server.port", str(UI_PORT), "--server.headless", "true"]
+UVICORN_CMD = [
+    "uvicorn",
+    "backend.app.main:app",
+    "--reload",
+    "--host",
+    API_HOST,
+    "--port",
+    str(API_PORT),
+]
+STREAMLIT_CMD = [
+    "streamlit",
+    "run",
+    "frontend/home.py",
+    "--server.port",
+    str(UI_PORT),
+    "--server.headless",
+    "true",
+]
 
 def _print_box(msg: str):
     line = "═" * (len(msg) + 2)
@@ -54,8 +68,25 @@ def start_process(cmd: list[str]) -> subprocess.Popen:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
     return subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), creationflags=creationflags)
 
-def main() -> int:
-    _print_box("Iniciando Teletriagem: API (FastAPI/Uvicorn) + UI (Streamlit)")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Executa API e UI da Teletriagem")
+    parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Inicia apenas a API FastAPI (sem Streamlit).",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Não abre o navegador automaticamente após iniciar a UI.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    mode_msg = "API (modo lite)" if args.lite else "API (FastAPI/Uvicorn) + UI (Streamlit)"
+    _print_box(f"Iniciando Teletriagem: {mode_msg}")
 
     # 1) Check Ollama (soft check)
     ollama_ok = wait_for_http(f"{OLLAMA_URL}/api/tags", timeout=5.0)
@@ -74,32 +105,38 @@ def main() -> int:
     else:
         print(f"❌ API não respondeu em {TELETRIAGEM_API_BASE}/health dentro do timeout.")
 
-    # 4) Start Streamlit (UI)
-    print("▶️  Iniciando UI (Streamlit)...")
-    ui_proc = start_process(STREAMLIT_CMD)
+    ui_proc: subprocess.Popen | None = None
 
-    # 5) Wait UI
-    ui_ok = wait_for_http(f"http://127.0.0.1:{UI_PORT}", timeout=60.0)
-    ui_url = f"http://127.0.0.1:{UI_PORT}"
-    if ui_ok:
-        print(f"✅ UI pronta em {ui_url}")
-        try:
-            webbrowser.open(ui_url, new=2)
-        except Exception:
-            pass
+    if args.lite:
+        # PERFORMANCE: permite subir apenas a API (economia de CPU/RAM em ambientes limitados).
+        _print_box("API em execução (modo lite). Pressione Ctrl+C para encerrar.")
     else:
-        print(f"❌ UI não respondeu em {ui_url} dentro do timeout. Veja os logs.")
+        print("▶️  Iniciando UI (Streamlit)...")
+        ui_proc = start_process(STREAMLIT_CMD)
 
-    _print_box("Teletriagem em execução. Pressione Ctrl+C para encerrar.")
+        # 5) Wait UI
+        ui_ok = wait_for_http(f"http://127.0.0.1:{UI_PORT}", timeout=60.0)
+        ui_url = f"http://127.0.0.1:{UI_PORT}"
+        if ui_ok:
+            print(f"✅ UI pronta em {ui_url}")
+            if not args.no_browser:
+                try:
+                    webbrowser.open(ui_url, new=2)
+                except Exception:
+                    pass
+        else:
+            print(f"❌ UI não respondeu em {ui_url} dentro do timeout. Veja os logs.")
+
+        _print_box("Teletriagem em execução. Pressione Ctrl+C para encerrar.")
 
     try:
         while True:
             api_ret = api_proc.poll()
-            ui_ret = ui_proc.poll()
+            ui_ret = ui_proc.poll() if ui_proc is not None else None
             if api_ret is not None:
                 print(f"⚠️ API finalizou com código {api_ret}. Encerrando UI...")
                 break
-            if ui_ret is not None:
+            if ui_proc is not None and ui_ret is not None:
                 print(f"⚠️ UI finalizou com código {ui_ret}. Encerrando API...")
                 break
             time.sleep(1.0)
@@ -125,4 +162,4 @@ def main() -> int:
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

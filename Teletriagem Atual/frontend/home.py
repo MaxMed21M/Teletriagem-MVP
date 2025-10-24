@@ -189,23 +189,45 @@ with ai_tab:
         if not ok:
             st.error(err or "Preencha os campos obrigatórios.")
         else:
-            with st.spinner("Chamando modelo no servidor Ollama..."):
-                try:
-                    t0 = time.perf_counter()
-                    response = request_ai_triage(payload_ai)
-                    elapsed_ms_fallback = int((time.perf_counter() - t0) * 1000)
-                except Exception as exc:
-                    st.error(f"Falha ao chamar a IA: {exc}")
-                else:
-                    st.session_state.last_ai_response = response
-                    # Atualiza defaults
-                    st.session_state.defaults["patient_name"] = payload_ai["patient_name"]
-                    st.session_state.defaults["age"] = payload_ai["age"]
-                    st.session_state.defaults["complaint"] = payload_ai["complaint"]
-                    st.session_state.defaults["hr"] = payload_ai["vitals"]["hr"]
-                    st.session_state.defaults["sbp"] = payload_ai["vitals"]["sbp"]
-                    st.session_state.defaults["temp"] = payload_ai["vitals"]["temp"]
-                    st.success("Resposta da IA recebida!")
+            status_ctx = getattr(st, "status", None)
+            if callable(status_ctx):
+                # PERFORMANCE: feedback imediato sem bloquear reruns longos do Streamlit.
+                with status_ctx("Preparando requisição para a IA...", expanded=False) as status:
+                    status.update(label="Enviando payload ao backend...", state="running")
+                    try:
+                        t0 = time.perf_counter()
+                        response = request_ai_triage(payload_ai)
+                        elapsed_ms_fallback = int((time.perf_counter() - t0) * 1000)
+                    except Exception as exc:
+                        status.update(label="Falha ao contatar o backend.", state="error")
+                        st.error(f"Falha ao chamar a IA: {exc}")
+                    else:
+                        if "latency_ms" not in response:
+                            response["latency_ms"] = elapsed_ms_fallback
+                        status.update(label="Resposta recebida da IA.", state="complete")
+                        st.session_state.last_ai_response = response
+                        st.toast("Resposta da IA recebida!", icon="🤖")
+            else:
+                with st.spinner("Chamando modelo no servidor Ollama..."):
+                    try:
+                        t0 = time.perf_counter()
+                        response = request_ai_triage(payload_ai)
+                        elapsed_ms_fallback = int((time.perf_counter() - t0) * 1000)
+                    except Exception as exc:
+                        st.error(f"Falha ao chamar a IA: {exc}")
+                    else:
+                        if "latency_ms" not in response:
+                            response["latency_ms"] = elapsed_ms_fallback
+                        st.session_state.last_ai_response = response
+                        st.success("Resposta da IA recebida!")
+
+            if st.session_state.last_ai_response:
+                st.session_state.defaults["patient_name"] = payload_ai["patient_name"]
+                st.session_state.defaults["age"] = payload_ai["age"]
+                st.session_state.defaults["complaint"] = payload_ai["complaint"]
+                st.session_state.defaults["hr"] = payload_ai["vitals"]["hr"]
+                st.session_state.defaults["sbp"] = payload_ai["vitals"]["sbp"]
+                st.session_state.defaults["temp"] = payload_ai["vitals"]["temp"]
 
     last_response = st.session_state.last_ai_response
     if last_response:

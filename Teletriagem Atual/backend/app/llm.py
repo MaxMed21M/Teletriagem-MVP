@@ -21,10 +21,15 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from functools import lru_cache
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import HTTPException, status
+
+# PERFORMANCE: clientes HTTP reutilizáveis com controle de concorrência.
+_CLIENTS: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], httpx.AsyncClient] = {}
+_CLIENT_LOCK = asyncio.Lock()
 
 # -----------------------------
 # Config e Timeouts
@@ -49,6 +54,7 @@ _MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 _RETRY_BACKOFF_BASE = float(os.getenv("LLM_RETRY_BACKOFF_BASE", "0.75"))  # segundos
 
 
+@lru_cache(maxsize=1)
 def _env_provider() -> str:
     return os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 
@@ -72,13 +78,31 @@ def _env_model(default_for_provider: Optional[str] = None) -> str:
 # Clientes HTTP
 # -----------------------------
 
-def _new_async_client(base_url: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        base_url=base_url,
-        headers=headers,
-        timeout=_DEFAULT_TIMEOUT,
-        follow_redirects=True,
-    )
+def _client_key(base_url: Optional[str], headers: Optional[Dict[str, str]]) -> Tuple[str, Tuple[Tuple[str, str], ...]]:
+    normalized_headers = tuple(sorted((headers or {}).items()))
+    return (base_url or ""), normalized_headers
+
+
+async def _get_async_client(
+    base_url: Optional[str] = None, headers: Optional[Dict[str, str]] = None
+) -> httpx.AsyncClient:
+    key = _client_key(base_url, headers)
+    client = _CLIENTS.get(key)
+    if client:
+        return client
+
+    async with _CLIENT_LOCK:
+        client = _CLIENTS.get(key)
+        if client is None:
+            # PERFORMANCE: reaproveita conexões HTTP/1.1 e HTTP/2 entre requisições.
+            client = httpx.AsyncClient(
+                base_url=base_url,
+                headers=headers,
+                timeout=_DEFAULT_TIMEOUT,
+                follow_redirects=True,
+            )
+            _CLIENTS[key] = client
+    return client
 
 
 async def _request_with_retries(
@@ -133,18 +157,18 @@ async def _ollama_generate(prompt: str, system: Optional[str], model: Optional[s
         },
     }
 
-    async with _new_async_client(base_url=base_url) as client:
-        resp = await _request_with_retries("POST", "/api/generate", client=client, json=payload)
-        if resp.is_error:
-            detail = _try_get_text(resp)
-            raise HTTPException(status_code=resp.status_code, detail=f"Ollama error: {detail}")
+    client = await _get_async_client(base_url=base_url)
+    resp = await _request_with_retries("POST", "/api/generate", client=client, json=payload)
+    if resp.is_error:
+        detail = _try_get_text(resp)
+        raise HTTPException(status_code=resp.status_code, detail=f"Ollama error: {detail}")
 
-        data = resp.json()
-        # Estrutura esperada: {"response": "...", ...}
-        text = data.get("response")
-        if not text:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Ollama respondeu sem 'response'.")
-        return text
+    data = resp.json()
+    # Estrutura esperada: {"response": "...", ...}
+    text = data.get("response")
+    if not text:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Ollama respondeu sem 'response'.")
+    return text
 
 
 async def _openai_generate(prompt: str, system: Optional[str], model: Optional[str]) -> str:
@@ -174,18 +198,18 @@ async def _openai_generate(prompt: str, system: Optional[str], model: Optional[s
         "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.2")),
     }
 
-    async with _new_async_client(base_url=base_url, headers=headers) as client:
-        resp = await _request_with_retries("POST", "/chat/completions", client=client, json=payload)
-        if resp.is_error:
-            detail = _try_get_text(resp)
-            raise HTTPException(status_code=resp.status_code, detail=f"OpenAI error: {detail}")
+    client = await _get_async_client(base_url=base_url, headers=headers)
+    resp = await _request_with_retries("POST", "/chat/completions", client=client, json=payload)
+    if resp.is_error:
+        detail = _try_get_text(resp)
+        raise HTTPException(status_code=resp.status_code, detail=f"OpenAI error: {detail}")
 
-        data = resp.json()
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except Exception:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OpenAI respondeu em formato inesperado.")
-        return text
+    data = resp.json()
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OpenAI respondeu em formato inesperado.")
+    return text
 
 
 async def _openrouter_generate(prompt: str, system: Optional[str], model: Optional[str]) -> str:
@@ -218,18 +242,18 @@ async def _openrouter_generate(prompt: str, system: Optional[str], model: Option
         "temperature": float(os.getenv("OPENROUTER_TEMPERATURE", "0.2")),
     }
 
-    async with _new_async_client(base_url=base_url, headers=headers) as client:
-        resp = await _request_with_retries("POST", "/chat/completions", client=client, json=payload)
-        if resp.is_error:
-            detail = _try_get_text(resp)
-            raise HTTPException(status_code=resp.status_code, detail=f"OpenRouter error: {detail}")
+    client = await _get_async_client(base_url=base_url, headers=headers)
+    resp = await _request_with_retries("POST", "/chat/completions", client=client, json=payload)
+    if resp.is_error:
+        detail = _try_get_text(resp)
+        raise HTTPException(status_code=resp.status_code, detail=f"OpenRouter error: {detail}")
 
-        data = resp.json()
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except Exception:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OpenRouter respondeu em formato inesperado.")
-        return text
+    data = resp.json()
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OpenRouter respondeu em formato inesperado.")
+    return text
 
 
 def _try_get_text(resp: httpx.Response) -> str:
@@ -293,32 +317,48 @@ async def ollama_healthcheck() -> Dict[str, Any]:
         "detail": "",
     }
 
-    async with _new_async_client(base_url=base_url) as client:
-        try:
-            # lista modelos
-            resp = await _request_with_retries("GET", "/api/tags", client=client)
-        except Exception as exc:
-            result["detail"] = f"Falha ao conectar ao Ollama: {exc!r}"
-            return result
-
-        if resp.is_error:
-            result["detail"] = f"Ollama respondeu {resp.status_code}: {resp.text[:200]}"
-            return result
-
-        try:
-            data = resp.json()
-        except Exception:
-            result["detail"] = "Resposta do Ollama inválida (não-JSON)."
-            return result
-
-        models = {m.get("name") for m in data.get("models", []) if isinstance(m, dict)}
-        result["ok"] = True
-        result["available"] = model in models
-        if not result["available"]:
-            result["detail"] = f"Modelo '{model}' não encontrado no servidor. Modelos: {sorted(models)}"
-        else:
-            result["detail"] = "Servidor e modelo disponíveis."
+    client = await _get_async_client(base_url=base_url)
+    try:
+        # lista modelos
+        resp = await _request_with_retries("GET", "/api/tags", client=client)
+    except Exception as exc:
+        result["detail"] = f"Falha ao conectar ao Ollama: {exc!r}"
         return result
+
+    if resp.is_error:
+        result["detail"] = f"Ollama respondeu {resp.status_code}: {resp.text[:200]}"
+        return result
+
+    try:
+        data = resp.json()
+    except Exception:
+        result["detail"] = "Resposta do Ollama inválida (não-JSON)."
+        return result
+
+    models = {m.get("name") for m in data.get("models", []) if isinstance(m, dict)}
+    result["ok"] = True
+    result["available"] = model in models
+    if not result["available"]:
+        result["detail"] = f"Modelo '{model}' não encontrado no servidor. Modelos: {sorted(models)}"
+    else:
+        result["detail"] = "Servidor e modelo disponíveis."
+    return result
+
+
+# -----------------------------
+# Shutdown helpers
+# -----------------------------
+
+async def close_llm_clients() -> None:
+    """Fecha clientes HTTP reutilizados (usado no ciclo de vida do FastAPI)."""
+    async with _CLIENT_LOCK:
+        clients = list(_CLIENTS.values())
+        _CLIENTS.clear()
+    for client in clients:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
 
 
 # -----------------------------

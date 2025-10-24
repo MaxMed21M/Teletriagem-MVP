@@ -1,5 +1,5 @@
 """Service layer helpers."""
 
-from .triage_ai import build_user_prompt, normalise_ai_struct, parse_ai_response
+from .triage_ai import build_user_prompt, parse_model_response
 
-__all__ = ["build_user_prompt", "normalise_ai_struct", "parse_ai_response"]
+__all__ = ["build_user_prompt", "parse_model_response"]

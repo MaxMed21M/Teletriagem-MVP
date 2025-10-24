@@ -1,38 +1,37 @@
-# backend/app/config.py
+"""Configurações centralizadas para o backend da Teletriagem."""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
 from typing import List
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-class Settings(BaseSettings):
-    # nome do app
-    APP_NAME: str = "Teletriagem"
-    # ambiente
-    ENV: str = "local"
+API_VERSION = "0.1.1"
 
-    # Banco local por padrão (arquivo teletriagem.db na raiz do projeto)
-    DATABASE_URL: str = "sqlite+aiosqlite:///teletriagem.db"
+# PERFORMANCE: evita recomputar listas/strings derivadas de variáveis de ambiente a cada requisição.
+_ALLOWED_ORIGINS_DEFAULT = (
+    "http://127.0.0.1:8501",
+    "http://localhost:8501",
+    "http://127.0.0.1:8502",
+    "http://localhost:8502",
+)
 
-    # CORS – ajuste as portas que você usa no Streamlit (8501/8051)
-    ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:8501",
-        "http://127.0.0.1:8501",
-        "http://localhost:8051",
-        "http://127.0.0.1:8051",
-    ]
 
-    # ==== Ollama / LLM (padrões locais; podem ser sobrescritos no .env) ====
-    OLLAMA_URL: str = "http://127.0.0.1:11434"
-    OLLAMA_MODEL: str = "qwen3b_q4km"  # seu alias criado no Ollama
-    REQUEST_TIMEOUT_S: float = 90.0
-    MAX_TOKENS: int = 512  # teto padrão da geração (num_predict)
-    OLLAMA_TEMPERATURE: float = 0.2
-    OLLAMA_TOP_P: float = 0.9
-    OLLAMA_TOP_K: int = 40
+@lru_cache(maxsize=1)
+def get_allowed_origins() -> List[str]:
+    env = os.getenv("TELETRIAGEM_EXTRA_ORIGINS", "").strip()
+    if not env:
+        return list(_ALLOWED_ORIGINS_DEFAULT)
+    extra = [o.strip() for o in env.split(",") if o.strip()]
+    return list(dict.fromkeys((*_ALLOWED_ORIGINS_DEFAULT, *extra)))
 
-    # ler variáveis do arquivo .env se existir
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",  # ignora variáveis desconhecidas no .env
+
+@lru_cache(maxsize=1)
+def get_system_prompt() -> str:
+    return os.getenv(
+        "TRIAGE_SYSTEM_PROMPT",
+        (
+            "Você é um assistente clínico para triagem rápida, objetivo e seguro. "
+            "Siga diretrizes de Atenção Primária, destaque red flags e recomende condutas "
+            "(incluindo quando encaminhar/ir à emergência). Responda em português claro."
+        ),
     )
-
-settings = Settings()
