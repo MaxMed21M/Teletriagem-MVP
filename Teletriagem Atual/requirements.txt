@@ -1,0 +1,26 @@
+# === Core API ===
+fastapi>=0.112,<1.0
+uvicorn[standard]>=0.30,<1.0
+
+# HTTP client (usado no llm.py)
+httpx>=0.27,<1.0
+anyio>=4.4,<5.0
+
+# Validação de dados
+pydantic>=2.7,<3.0
+typing-extensions>=4.12,<5.0
+
+# Serialização rápida (opcional, mas útil no FastAPI para respostas)
+orjson>=3.10,<4.0
+
+# Carga de variáveis de ambiente (.env)
+python-dotenv>=1.0,<2.0
+
+# === UI ===
+streamlit>=1.34,<2.0
+
+# Hot reload do Uvicorn (Windows/Linux/Mac)
+watchfiles>=0.21,<1.0
+
+# Logs e saída bonita (opcional)
+rich>=13.7,<14.0
