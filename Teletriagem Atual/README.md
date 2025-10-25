@@ -1,87 +1,84 @@
-# Teletriagem
+# Teletriagem — MVP
 
-Aplicação de teletriagem composta por um backend FastAPI e um frontend Streamlit. O
-objetivo é registrar triagens manuais e também gerar sugestões assistidas por um
-LLM servido via [Ollama](https://ollama.com/).
+Aplicação de triagem médica composta por um backend FastAPI e uma interface Streamlit.
+O fluxo principal permite registrar triagens manuais e solicitar um resumo estruturado
+gerado por um modelo via Ollama.
 
-## Pré-requisitos
+## Requisitos
 
-- Python 3.11+
-- Ollama instalado localmente com o modelo configurado (ex.: `qwen3b_q4km`).
-- `sqlite3` acessível (o projeto usa um arquivo `teletriagem.db` na raiz).
+- Python 3.12
+- [Ollama](https://ollama.com/) em execução local
+- Modelo `qwen3b_q4km:latest` baixado (`ollama pull qwen3b_q4km:latest`)
 
 ## Configuração
 
 1. Crie e ative um ambiente virtual.
-
    ```bash
    python -m venv .venv
    source .venv/bin/activate
    ```
 
 2. Instale as dependências.
-
    ```bash
    pip install -r requirements.txt
    ```
 
-3. (Opcional) Copie `.env.example` para `.env` e personalize. Caso o arquivo não
-   exista, configure as variáveis de ambiente diretamente. As principais são:
-
-   | Variável | Descrição | Valor padrão |
-   | --- | --- | --- |
-   | `APP_NAME` | Nome exibido no FastAPI | `Teletriagem` |
-   | `DATABASE_URL` | Caminho do SQLite | `sqlite+aiosqlite:///teletriagem.db` |
-   | `OLLAMA_URL` | Endpoint do Ollama | `http://127.0.0.1:11434` |
-   | `OLLAMA_MODEL` | Nome/alias do modelo | `qwen3b_q4km` |
-   | `MAX_TOKENS` | Limite de tokens gerados | `512` |
-   | `TELETRIAGEM_API_BASE` | Base URL consumida pelo Streamlit | `http://127.0.0.1:8000` |
+3. Configure as variáveis de ambiente (opcional). Caso não exista, crie um arquivo `.env`
+   na raiz com o seguinte conteúdo mínimo:
+   ```env
+   LLM_PROVIDER=ollama
+   LLM_MODEL=qwen3b_q4km:latest
+   OLLAMA_BASE_URL=http://127.0.0.1:11434
+   ```
 
 ## Execução
 
-Abra dois terminais (ambos com o virtualenv ativo):
-
-### Backend (FastAPI)
+O comando abaixo inicia a API (porta `8000`) e a UI Streamlit (porta `8501`).
 
 ```bash
-uvicorn backend.app.main:app --reload
+python run_all.py
 ```
 
-A API ficará disponível em `http://127.0.0.1:8000`. A rota `/docs` expõe a UI do
-Swagger. Durante o startup a tabela `triage_sessions` é criada/atualizada.
+Use `python run_all.py --lite` para subir apenas a API.
 
-### Frontend (Streamlit)
+## Endpoints principais
 
-```bash
-streamlit run frontend/home.py
-```
+- `GET /health` → status da aplicação
+- `POST /api/triage/` → registra triagem manual
+- `POST /api/triage/ai` → gera triagem assistida por IA (contrato fixo: `prompt`, `model_text`, `parsed`, `parse_error`)
+- `GET /llm/ollama/health` → valida se o modelo configurado está disponível
 
-Caso o backend rode em host/porta diferentes, defina `TELETRIAGEM_API_BASE` ou
-adicione `api_base_url` em `frontend/.streamlit/secrets.toml` ou `st.secrets`.
+A documentação interativa está em `http://127.0.0.1:8000/docs`.
 
-## Fluxos disponíveis
+## Interface Streamlit
 
-- **Triagem manual**: formulário padrão grava os dados em `teletriagem.db`.
-- **Triagem IA**: envia os mesmos campos para o backend que consulta o LLM via
-  Ollama, valida a resposta JSON e armazena tanto a estrutura normalizada quanto
-  o texto bruto e a latência da chamada.
-- **Histórico**: lista paginada (com cache de 30s) permitindo filtrar por origem
-  (`manual` ou `ai`).
+A interface está em `http://127.0.0.1:8501` e oferece:
+
+- formulário compartilhado para triagens manuais e IA;
+- abas “Estruturado”, “Texto do modelo” e “JSON bruto” para cada resposta da IA;
+- painel de debug opcional exibindo o payload enviado e a resposta recebida;
+- campo na barra lateral para alterar a URL da API e ativar modo DEBUG.
 
 ## Testes rápidos
 
-O projeto não possui suite de testes automatizados ainda, mas você pode executar
-uma checagem rápida de sintaxe:
+Scripts de verificação manual estão em `scripts/test_api.ps1`:
 
-```bash
-python -m compileall backend frontend
+```powershell
+./scripts/test_api.ps1
 ```
 
-## Estilo de código
+O script realiza chamadas para `/health`, `/api/triage/` e `/api/triage/ai` usando PowerShell.
 
-- Backend prioriza async/await com `aiosqlite`.
-- Preferência por validação via Pydantic (`schemas.py`).
-- O frontend usa Streamlit, então widgets compartilham estado via `session_state`.
+## Troubleshooting
 
-Contribuições são bem-vindas! Abra um PR descrevendo claramente o fluxo alterado
-ou corrigido.
+- **Modelo indisponível**: verifique `python run_all.py` e a rota `/llm/ollama/health`.
+- **Portas em uso**: altere `API_PORT` ou `UI_PORT` via variáveis de ambiente.
+- **Timeouts do LLM**: ajuste `LLM_CONNECT_TIMEOUT_S`, `LLM_READ_TIMEOUT_S`, etc., no `.env`.
+
+## Deploy leve
+
+Para uso em VPS local, recomenda-se:
+
+- executar `uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 1`;
+- iniciar o Streamlit com `streamlit run ui/home.py --server.port 8501 --server.headless true`;
+- manter Ollama ativo com o modelo `qwen3b_q4km:latest` previamente baixado.

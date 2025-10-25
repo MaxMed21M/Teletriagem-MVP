@@ -1,317 +1,191 @@
 from __future__ import annotations
 
-import inspect
-import json
-import os
+import logging
 import time
-import uuid
-from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from pydantic import BaseModel, ValidationError
 
 from .config import API_VERSION, get_allowed_origins, get_system_prompt
+from .llm import (
+    close_llm_clients,
+    current_model,
+    current_provider,
+    llm_generate,
+    ollama_healthcheck,
+)
+from .triage_ai import TriageCreate, build_user_prompt, parse_model_response
 
-# ===============================
-# Imports internos com mensagens claras
-# ===============================
-try:
-    from .services.triage_ai import build_user_prompt, parse_model_response
-except Exception as exc:
-    build_user_prompt = None  # type: ignore
-    parse_model_response = None  # type: ignore
-    _triage_ai_import_error = exc
-else:
-    _triage_ai_import_error = None
+logger = logging.getLogger("teletriagem")
 
-try:
-    from .llm import close_llm_clients, llm_generate, ollama_healthcheck
-except Exception as exc:
-    close_llm_clients = None  # type: ignore
-    llm_generate = None  # type: ignore
-    ollama_healthcheck = None  # type: ignore
-    _llm_import_error = exc
-else:
-    _llm_import_error = None
-
-# ===============================
-# App, CORS e middlewares
-# ===============================
 ALLOWED_ORIGINS = get_allowed_origins()
 SYSTEM_PROMPT = get_system_prompt()
 
 
 @asynccontextmanager
-async def app_lifespan(_: FastAPI):
+async def lifespan(_: FastAPI):
+    logger.info(
+        "Iniciando Teletriagem com provider=%s model=%s",
+        current_provider(),
+        current_model(),
+    )
     try:
         yield
     finally:
-        if close_llm_clients is not None:
-            try:
-                # PERFORMANCE: encerra pools HTTP reutilizados para liberar recursos.
-                await close_llm_clients()
-            except Exception:
-                pass
+        try:
+            await close_llm_clients()
+        except Exception:
+            pass
 
 
-app = FastAPI(title="Teletriagem API", version=API_VERSION, lifespan=app_lifespan)
-
-# PERFORMANCE: configura CORS/GZip uma única vez e reaproveita resultados de ambiente.
+app = FastAPI(title="Teletriagem API", version=API_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 app.add_middleware(GZipMiddleware, minimum_size=512)
 
-# ===============================
-# Schemas mínimos (fallback)
-# ===============================
-try:
-    from .schemas import TriageCreate as _AppTriageCreate  # type: ignore
-except Exception:
-    _AppTriageCreate = None
+
+class TriageRecord(Dict[str, Any]):
+    pass
 
 
-class Vitals(BaseModel):
-    hr: Optional[int] = None
-    sbp: Optional[int] = None
-    dbp: Optional[int] = None
-    temp: Optional[float] = None
-    spo2: Optional[int] = None
-
-
-class TriageCreate(BaseModel):  # type: ignore[misc]
-    complaint: str
-    age: Optional[int] = None
-    vitals: Optional[Vitals] = None
-    patient_name: Optional[str] = None
-
-    def to_backend_model(self) -> Any:
-        """Converte para o schema "oficial" se disponível."""
-        if _AppTriageCreate is None:
-            return self
-        data: Dict[str, Any] = {
-            "complaint": self.complaint,
-            "age": self.age,
-            "vitals": (self.vitals.dict() if self.vitals else {}),
-            "patient_name": self.patient_name or "Paciente não informado",
-        }
-        return _AppTriageCreate(**data)
-
-
-# ===============================
-# Utils
-# ===============================
-
-def _resolve_prompt_mode() -> str:
-    if build_user_prompt is None:
-        return "unavailable"
-    try:
-        sig = inspect.signature(build_user_prompt)
-    except Exception:
-        return "payload"
-
-    params = [
-        p
-        for p in sig.parameters.values()
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-    ]
-    if len(params) <= 1:
-        return "payload"
-    if len(params) >= 3:
-        return "legacy"
-    return "adaptive"
-
-
-_PROMPT_MODE = _resolve_prompt_mode()
-
-
-def _adaptive_build_user_prompt(payload: TriageCreate) -> str:
-    """
-    Chama build_user_prompt aceitando variantes de assinatura:
-    - build_user_prompt(payload)
-    - build_user_prompt(complaint, age, vitals)
-    """
-    if build_user_prompt is None:
-        raise RuntimeError("build_user_prompt não está disponível.")
-
-    # PERFORMANCE: evita chamar inspect.signature em toda requisição.
-    mode = _PROMPT_MODE
-    if mode == "payload":
-        return build_user_prompt(payload)  # type: ignore[arg-type]
-    if mode == "legacy":
-        vitals_obj = (
-            payload.vitals.dict()
-            if hasattr(payload.vitals, "dict") and payload.vitals
-            else payload.vitals
-        )
-        return build_user_prompt(payload.complaint, payload.age, vitals_obj)  # type: ignore[misc]
-
-    try:
-        return build_user_prompt(payload)  # type: ignore[arg-type]
-    except TypeError:
-        vitals_obj = (
-            payload.vitals.dict()
-            if hasattr(payload.vitals, "dict") and payload.vitals
-            else payload.vitals
-        )
-        return build_user_prompt(payload.complaint, payload.age, vitals_obj)  # type: ignore[misc]
-
-
-def _build_llm_fallback_response(error: str) -> str:
-    """Retorna um JSON estruturado de emergência quando o LLM falhar."""
-    fallback = {
-        "priority": "urgent",
-        "red_flags": [
-            "Modelo de IA indisponível no momento.",
-            "Realize avaliação clínica manual imediatamente.",
-        ],
-        "probable_causes": ["Indisponibilidade temporária do assistente de IA."],
-        "recommended_actions": [
-            "Aplicar protocolo de triagem presencial.",
-            "Acionar suporte técnico para restabelecer o serviço de IA.",
-            f"Detalhe técnico: {error}",
-        ],
-        "disposition": "Clinic same day",
-    }
-    return json.dumps(fallback, ensure_ascii=False, indent=2)
-
-
-# ===============================
-# "Banco" em memória p/ demo
-# ===============================
-_IN_MEMORY_TRIAGE: Dict[str, Dict[str, Any]] = {}
+_TRIAGE_STORE: Dict[str, TriageRecord] = {}
 _TRIAGE_ORDER: Deque[str] = deque()
+_COUNTER = 0
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _next_id() -> str:
+    global _COUNTER
+    _COUNTER += 1
+    return str(_COUNTER)
 
 
-# ===============================
-# Rotas
-# ===============================
+def _serialize_triage(item: TriageRecord) -> Dict[str, Any]:
+    return dict(item)
 
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    return {"status": "ok", "app": "teletriagem", "version": API_VERSION}
+    return {
+        "status": "ok",
+        "app": "teletriagem",
+        "version": API_VERSION,
+        "llm_provider": current_provider(),
+        "llm_model": current_model(),
+    }
 
 
 @app.get("/llm/ollama/health")
 async def llm_ollama_health() -> Dict[str, Any]:
-    if _llm_import_error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Falha ao importar llm.py: {_llm_import_error!r}",
-        )
     return await ollama_healthcheck()
 
 
-@app.get("/api/triage/", response_model=List[Dict[str, Any]])
+@app.get("/api/triage/")
 async def list_triage(limit: int = 50, source: Optional[str] = None) -> List[Dict[str, Any]]:
-    max_items = max(1, min(limit, 200))
+    limit = max(1, min(limit, 200))
     results: List[Dict[str, Any]] = []
-    # PERFORMANCE: usa deque para iteração sem sort O(n log n) a cada requisição.
     for triage_id in _TRIAGE_ORDER:
-        item = _IN_MEMORY_TRIAGE.get(triage_id)
+        item = _TRIAGE_STORE.get(triage_id)
         if not item:
             continue
         if source and item.get("source") != source:
             continue
-        results.append(item)
-        if len(results) >= max_items:
+        results.append(_serialize_triage(item))
+        if len(results) >= limit:
             break
     return results
 
 
 @app.post("/api/triage/", status_code=status.HTTP_201_CREATED)
 async def create_triage(payload: TriageCreate) -> Dict[str, Any]:
-    triage_id = str(uuid.uuid4())
-    created_at = _now_iso()
-    item = {
+    triage_id = _next_id()
+    record: TriageRecord = {
         "id": triage_id,
+        "source": "manual",
         "patient_name": payload.patient_name or "Paciente não informado",
         "complaint": payload.complaint,
         "age": payload.age,
-        "vitals": payload.vitals.dict() if payload.vitals else None,
-        "created_at": created_at,
-        "source": "manual",
+        "vitals": payload.vitals.dict(exclude_none=True) if payload.vitals else None,
     }
-    _IN_MEMORY_TRIAGE[triage_id] = item
+    _TRIAGE_STORE[triage_id] = record
     _TRIAGE_ORDER.appendleft(triage_id)
-    return item
+    return _serialize_triage(record)
 
 
 @app.post("/api/triage/ai")
-async def triage_ai(payload: TriageCreate) -> Dict[str, Any]:
-    if _triage_ai_import_error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Falha ao importar services.triage_ai: {_triage_ai_import_error!r}",
-        )
-    if _llm_import_error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Falha ao importar llm: {_llm_import_error!r}",
-        )
-    if build_user_prompt is None or parse_model_response is None or llm_generate is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Dependências internas indisponíveis (build_user_prompt/parse_model_response/llm_generate).",
-        )
-
+async def triage_ai(payload: TriageCreate, response: Response) -> Dict[str, Any]:
     started_at = time.perf_counter()
 
     try:
-        prompt: str = _adaptive_build_user_prompt(payload)
-    except ValidationError as ve:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Payload inválido para build_user_prompt: {ve.errors()}",
-        )
-    except Exception as exc:
+        prompt = build_user_prompt(payload)
+    except Exception as exc:  # pragma: no cover - defensive guard
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao montar prompt: {exc!r}",
-        )
+            detail=f"Falha ao gerar prompt: {exc}",
+        ) from exc
 
-    llm_error: Optional[str] = None
     try:
-        model_text: str = await llm_generate(prompt, system=SYSTEM_PROMPT)
-    except HTTPException as http_exc:
-        llm_error = f"HTTPException {http_exc.status_code}: {http_exc.detail}"
-        model_text = _build_llm_fallback_response(llm_error)
-    except Exception as exc:
-        llm_error = f"{exc.__class__.__name__}: {exc}"
-        model_text = _build_llm_fallback_response(llm_error)
+        model_text = await llm_generate(prompt, system=SYSTEM_PROMPT)
+    except HTTPException as exc:
+        response.status_code = exc.status_code
+        model_text = ""
+        parsed: Optional[Dict[str, Any]] = None
+        parse_error = f"LLM error: {exc.detail}"
+        return {
+            "prompt": prompt,
+            "model_text": model_text,
+            "parsed": parsed,
+            "parse_error": parse_error,
+        }
+    except Exception as exc:  # pragma: no cover - fallback for unexpected issues
+        response.status_code = status.HTTP_502_BAD_GATEWAY
+        model_text = ""
+        parsed = None
+        parse_error = f"LLM error: {exc}"
+        return {
+            "prompt": prompt,
+            "model_text": model_text,
+            "parsed": parsed,
+            "parse_error": parse_error,
+        }
 
-    parsed: Optional[Dict[str, Any]] = None
-    parse_error: Optional[str] = None
     try:
         parsed_obj = parse_model_response(model_text)
-        parsed = parsed_obj.dict() if hasattr(parsed_obj, "dict") else parsed_obj  # type: ignore
+        parsed = parsed_obj if isinstance(parsed_obj, dict) else dict(parsed_obj)
+        parse_error = None
     except Exception as exc:
-        parse_error = f"Falha ao interpretar a resposta do modelo: {exc!r}"
-    if llm_error and not parse_error:
-        parse_error = llm_error
+        parsed = None
+        parse_error = f"Falha ao interpretar resposta: {exc}"
 
     latency_ms = int((time.perf_counter() - started_at) * 1000)
+    record: TriageRecord = {
+        "id": _next_id(),
+        "source": "ai",
+        "patient_name": payload.patient_name or "Paciente não informado",
+        "complaint": payload.complaint,
+        "age": payload.age,
+        "vitals": payload.vitals.dict(exclude_none=True) if payload.vitals else None,
+        "prompt": prompt,
+        "model_text": model_text,
+        "parsed": parsed,
+        "parse_error": parse_error,
+        "latency_ms": latency_ms,
+        "llm_model": current_model(),
+    }
+    _TRIAGE_STORE[record["id"]] = record
+    _TRIAGE_ORDER.appendleft(record["id"])
 
     return {
         "prompt": prompt,
         "model_text": model_text,
         "parsed": parsed,
         "parse_error": parse_error,
-        "llm_error": llm_error,
-        "latency_ms": latency_ms,  # PERFORMANCE: mede latência e reutiliza no frontend.
-        "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
     }
