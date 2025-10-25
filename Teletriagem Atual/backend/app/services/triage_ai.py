@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, TypedDict
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, TypedDict, Tuple
 
 # ============================================================
 # Integração com schemas (com fallback seguro)
@@ -19,7 +20,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 try:
     # Esperado no projeto
-    from .schemas import TriageCreate, TriageAIStruct  # type: ignore
+    from ..schemas import TriageCreate, TriageAIStruct  # type: ignore
 except Exception:
     # Fallback mínimo para não quebrar em desenvolvimento
     from pydantic import BaseModel
@@ -133,29 +134,39 @@ SYMPTOM_GUIDES: List[SymptomGuide] = [
 
 def _norm(s: Optional[str]) -> str:
     return (s or "").strip().lower()
-
-
-def _select_guides(complaint: str, age: Optional[int]) -> List[SymptomGuide]:
-    c = _norm(complaint)
+@lru_cache(maxsize=128)
+def _cached_guides(complaint_norm: str, age_key: int) -> Tuple[SymptomGuide, ...]:
     selected: List[SymptomGuide] = []
     for g in SYMPTOM_GUIDES:
         # idade
-        if "age_min" in g and age is not None and age < int(g["age_min"]):
+        if "age_min" in g and age_key >= 0 and age_key < int(g["age_min"]):
             continue
-        if "age_max" in g and age is not None and age > int(g["age_max"]):
+        if "age_max" in g and age_key >= 0 and age_key > int(g["age_max"]):
             continue
         # keywords
         kws = [k.lower() for k in g.get("keywords", [])]
-        if any(kw in c for kw in kws):
+        if any(kw in complaint_norm for kw in kws):
             selected.append(g)
-    return selected
+    return tuple(selected)
+
+
+def _select_guides(complaint: str, age: Optional[int]) -> List[SymptomGuide]:
+    # PERFORMANCE: cache leve para evitar reprocessar guias a cada requisição.
+    norm = _norm(complaint)
+    age_key = age if age is not None else -1
+    return list(_cached_guides(norm, age_key))
 
 
 def _format_vitals(v: Optional[Any]) -> str:
     if not v:
         return "Não informados."
     # Suporta Pydantic model ou dict
-    d = v.dict() if hasattr(v, "dict") else dict(v)
+    if hasattr(v, "model_dump"):
+        d = v.model_dump()
+    elif hasattr(v, "dict"):
+        d = v.dict()
+    else:
+        d = dict(v)
     parts = []
     if d.get("hr") is not None:
         parts.append(f"FC: {d['hr']} bpm")
@@ -171,6 +182,19 @@ def _format_vitals(v: Optional[Any]) -> str:
 # ============================================================
 # Prompt builder (✅ assinatura única com payload)
 # ============================================================
+
+# PERFORMANCE: evita recriar a especificação JSON do prompt a cada chamada.
+_PROMPT_SPEC = (
+    "Responda de forma breve, clara e **ESTRUTURADA em JSON** com as chaves abaixo:\n"
+    "{\n"
+    '  "priority": "emergent|urgent|non-urgent",\n'
+    '  "red_flags": [list de strings],\n'
+    '  "probable_causes": [list de strings],\n'
+    '  "recommended_actions": [list de strings],\n'
+    '  "disposition": "ER|Clinic same day|Clinic routine|Home care + watch"\n'
+    "}\n"
+    "Só retorne o JSON, sem explicações adicionais."
+)
 
 def build_user_prompt(payload: TriageCreate) -> str:
     """
@@ -211,19 +235,7 @@ def build_user_prompt(payload: TriageCreate) -> str:
                 b.append(f"Notas: {notes}")
             blocks.append("\n".join(b))
 
-    # Instrução ao modelo para responder de forma estruturada
-    spec = (
-        "Responda de forma breve, clara e **ESTRUTURADA em JSON** com as chaves abaixo:\n"
-        "{\n"
-        '  "priority": "emergent|urgent|non-urgent",\n'
-        '  "red_flags": [list de strings],\n'
-        '  "probable_causes": [list de strings],\n'
-        '  "recommended_actions": [list de strings],\n'
-        '  "disposition": "ER|Clinic same day|Clinic routine|Home care + watch"],\n"
-        "}\n"
-        "Só retorne o JSON, sem explicações adicionais."
-    )
-    blocks.append(spec)
+    blocks.append(_PROMPT_SPEC)
 
     return "\n\n".join(blocks)
 

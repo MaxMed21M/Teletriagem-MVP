@@ -1,0 +1,27 @@
+meta:
+  pack_id: urinary
+  version: 1.0.0
+  locales: [pt-BR]
+  last_reviewed: 2025-02-12
+vocab:
+  probable_causes_allow:
+    - "Infecção urinária"
+    - "Pielonefrite"
+    - "Cólica renal"
+  actions_allow:
+    - "Urocultura"
+    - "Antibiótico empírico"
+    - "Analgésico"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Infecção urinária":
+      - {system: "CID-10", code: "N39.0"}
+red_flags:
+  - "febre alta"
+  - "dor lombar intensa"
+  - "paciente imunossuprimido"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "urgent", disposition: "Clinic same day"}

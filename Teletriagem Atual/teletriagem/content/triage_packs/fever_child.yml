@@ -1,0 +1,27 @@
+meta:
+  pack_id: fever_child
+  version: 1.0.0
+  locales: [pt-BR]
+  last_reviewed: 2025-07-01
+vocab:
+  probable_causes_allow:
+    - "Infecção viral"
+    - "Infecção bacteriana"
+    - "Desidratação"
+  actions_allow:
+    - "Antitérmico conforme peso"
+    - "Hidratação oral"
+    - "Encaminhar à emergência pediátrica"
+    - "Exames laboratoriais conforme avaliação"
+codes:
+  conditions:
+    "Infecção viral":
+      - {system: "CID-10", code: "B34.9"}
+red_flags:
+  - "letargia"
+  - "irritabilidade intensa"
+  - "sinais de choque"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "urgent", disposition: "Clinic same day"}

@@ -1,0 +1,37 @@
+meta:
+  pack_id: dyspnea
+  version: 1.1.0
+  locales: [pt-BR]
+  last_reviewed: 2025-08-15
+vocab:
+  probable_causes_allow:
+    - "Exacerbação de asma"
+    - "Insuficiência cardíaca descompensada"
+    - "Embolia pulmonar"
+    - "Pneumonia"
+    - "Ansiedade/pânico"
+  actions_allow:
+    - "Oxigênio suplementar"
+    - "Nebulização com broncodilatador"
+    - "Diurético intravenoso"
+    - "Encaminhar ao pronto-socorro"
+    - "Gasometria arterial"
+codes:
+  conditions:
+    "Pneumonia":
+      - {system: "CID-10", code: "J18"}
+    "Insuficiência cardíaca descompensada":
+      - {system: "CID-10", code: "I50"}
+red_flags:
+  - "SpO2<92%"
+  - "sinais de exaustão"
+  - "confusão mental"
+rules:
+  disposition_overrides:
+    - when: "spo2 < 92 or any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}
+scores:
+  - name: "NEWS2"
+    inputs: ["hr", "sbp", "spo2", "rr", "gcs", "temp"]
+    thresholds:
+      high: {priority: "emergent", disposition: "ER"}

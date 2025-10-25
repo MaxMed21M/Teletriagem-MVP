@@ -1,0 +1,38 @@
+meta:
+  pack_id: chest_pain
+  version: 1.4.2
+  locales: [pt-BR]
+  last_reviewed: 2025-10-01
+vocab:
+  probable_causes_allow:
+    - "Síndrome coronariana aguda"
+    - "Pericardite"
+    - "Embolia pulmonar"
+    - "Dissecção de aorta"
+    - "Espasmo esofágico"
+    - "Ansiedade/pânico"
+  actions_allow:
+    - "ECG em até 10 minutos"
+    - "Troponina seriada 0h/1-3h"
+    - "AAS 160–325 mg mastigável se sem alergia/sangramento"
+    - "Nitrato se indicado e sem contraindicação"
+    - "Oxigênio se SpO₂<92%"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Síndrome coronariana aguda":
+      - {system: "CID-10", code: "I21"}
+red_flags:
+  - "dor torácica + sudorese"
+  - "dor irradiada"
+  - "dispneia grave"
+  - "SpO2<92%"
+rules:
+  disposition_overrides:
+    - when: "spo2 < 92 or sbp < 90 or gcs and gcs < 15 or any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}
+scores:
+  - name: "SCA_simplificado"
+    inputs: ["age", "sex", "sudorese", "irradiação", "fatores_risco"]
+    thresholds:
+      high: {priority: "emergent", disposition: "ER"}

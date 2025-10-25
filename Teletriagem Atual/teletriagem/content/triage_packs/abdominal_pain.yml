@@ -1,0 +1,34 @@
+meta:
+  pack_id: abdominal_pain
+  version: 1.0.3
+  locales: [pt-BR]
+  last_reviewed: 2025-06-20
+vocab:
+  probable_causes_allow:
+    - "Apendicite"
+    - "Colecistite"
+    - "Pancreatite"
+    - "Gastrite"
+    - "Cólica renal"
+  actions_allow:
+    - "Ultrassom de abdome"
+    - "Analgesia adequada"
+    - "Encaminhar ao pronto-socorro"
+    - "Hidratação endovenosa"
+codes:
+  conditions:
+    "Apendicite":
+      - {system: "CID-10", code: "K35"}
+red_flags:
+  - "dor abdominal com defesa"
+  - "febre alta persistente"
+  - "vômitos incoercíveis"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "urgent", disposition: "Clinic same day"}
+scores:
+  - name: "Alvarado"
+    inputs: ["dor_quadrante_direito", "rebote", "leucocitose"]
+    thresholds:
+      high: {priority: "urgent", disposition: "Clinic same day"}

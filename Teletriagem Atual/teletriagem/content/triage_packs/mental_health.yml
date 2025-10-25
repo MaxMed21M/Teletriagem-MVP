@@ -1,0 +1,28 @@
+meta:
+  pack_id: mental_health
+  version: 1.0.1
+  locales: [pt-BR]
+  last_reviewed: 2025-05-30
+vocab:
+  probable_causes_allow:
+    - "Episódio depressivo"
+    - "Transtorno de ansiedade"
+    - "Risco suicida"
+    - "Surto psicótico"
+  actions_allow:
+    - "Avaliação psiquiátrica urgente"
+    - "Encaminhar para CAPS"
+    - "Apoio psicossocial"
+    - "Garantir segurança do paciente"
+codes:
+  conditions:
+    "Episódio depressivo":
+      - {system: "CID-10", code: "F32"}
+red_flags:
+  - "ideação suicida ativa"
+  - "comportamento violento"
+  - "desorganização severa"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}

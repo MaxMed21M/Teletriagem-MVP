@@ -1,0 +1,33 @@
+meta:
+  pack_id: ent_ear_throat
+  version: 1.0.0
+  locales: [pt-BR]
+  last_reviewed: 2025-01-25
+vocab:
+  probable_causes_allow:
+    - "Otite média aguda"
+    - "Amigdalite"
+    - "Laringite"
+    - "Corpo estranho"
+  actions_allow:
+    - "Analgesia"
+    - "Antibiótico quando indicado"
+    - "Remoção de corpo estranho"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Amigdalite":
+      - {system: "CID-10", code: "J03"}
+red_flags:
+  - "disfagia severa"
+  - "sialorreia"
+  - "dificuldade respiratória"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "urgent", disposition: "Clinic same day"}
+scores:
+  - name: "Centor-McIsaac"
+    inputs: ["idade", "exsudato", "febre", "adenopatia"]
+    thresholds:
+      high: {priority: "urgent", disposition: "Clinic same day"}

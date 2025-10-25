@@ -1,0 +1,16 @@
+[llm]
+provider = "mock"
+model = "qwen3b_q4km:latest"
+connect_timeout = 2.0
+read_timeout = 10.0
+write_timeout = 10.0
+pool_timeout = 5.0
+
+[rnds]
+endpoint = "https://api.rnds.saude.gov.br/fhir"
+api_key = "CHANGEME"
+
+[pec_ledi]
+endpoint = "https://pec.local/ledi"
+username = "user"
+password = "pass"

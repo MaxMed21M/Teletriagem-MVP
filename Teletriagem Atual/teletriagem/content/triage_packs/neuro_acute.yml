@@ -1,0 +1,33 @@
+meta:
+  pack_id: neuro_acute
+  version: 1.2.1
+  locales: [pt-BR]
+  last_reviewed: 2025-09-10
+vocab:
+  probable_causes_allow:
+    - "Acidente vascular cerebral"
+    - "Crise convulsiva"
+    - "Enxaqueca"
+    - "Hipoglicemia"
+  actions_allow:
+    - "Acionar protocolo de AVC"
+    - "Controle glicêmico"
+    - "Tomografia de crânio"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Acidente vascular cerebral":
+      - {system: "CID-10", code: "I64"}
+red_flags:
+  - "déficit neurológico focal"
+  - "fala arrastada"
+  - "convulsão prolongada"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}
+scores:
+  - name: "FAST"
+    inputs: ["face", "arm", "speech", "time"]
+    thresholds:
+      high: {priority: "emergent", disposition: "ER"}

@@ -1,0 +1,62 @@
+[
+  {
+    "complaint": "Dor no peito há 30 minutos com sudorese",
+    "age": 55,
+    "vitals": {"hr": 110, "sbp": 100, "spo2": 94},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor torácica irradiada para o braço",
+    "age": 67,
+    "vitals": {"hr": 95, "sbp": 120},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Desconforto torácico e falta de ar",
+    "age": 48,
+    "vitals": {"hr": 102, "spo2": 91},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor no peito leve sem irradiação",
+    "age": 40,
+    "vitals": {"hr": 80, "spo2": 99},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor torácica com sudorese intensa",
+    "age": 72,
+    "vitals": {"hr": 120, "sbp": 85},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Aperto no peito durante esforço",
+    "age": 60,
+    "vitals": {"hr": 115, "spo2": 90},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor torácica súbita com dispneia",
+    "age": 52,
+    "vitals": {"hr": 108, "spo2": 95},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor no peito e ansiedade",
+    "age": 35,
+    "vitals": {"hr": 100, "spo2": 97},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor torácica com sudorese e náuseas",
+    "age": 58,
+    "vitals": {"hr": 112, "spo2": 93},
+    "expected_priority": "emergent"
+  },
+  {
+    "complaint": "Dor no peito após esforço com falta de ar",
+    "age": 63,
+    "vitals": {"hr": 118, "spo2": 92},
+    "expected_priority": "emergent"
+  }
+]

@@ -1,0 +1,28 @@
+meta:
+  pack_id: allergic
+  version: 1.0.0
+  locales: [pt-BR]
+  last_reviewed: 2025-03-18
+vocab:
+  probable_causes_allow:
+    - "Anafilaxia"
+    - "Reação alérgica moderada"
+    - "Urticária"
+  actions_allow:
+    - "Adrenalina intramuscular"
+    - "Anti-histamínico"
+    - "Corticosteroide"
+    - "Observação"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Anafilaxia":
+      - {system: "CID-10", code: "T78.2"}
+red_flags:
+  - "estridor"
+  - "hipotensão"
+  - "edema de glote"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}

@@ -1,0 +1,33 @@
+meta:
+  pack_id: trauma
+  version: 1.0.0
+  locales: [pt-BR]
+  last_reviewed: 2025-04-22
+vocab:
+  probable_causes_allow:
+    - "Trauma cranioencefálico"
+    - "Fratura"
+    - "Hemorragia interna"
+    - "Contusão"
+  actions_allow:
+    - "Imobilização"
+    - "Tomografia"
+    - "Transfusão se indicado"
+    - "Encaminhar ao pronto-socorro"
+codes:
+  conditions:
+    "Fratura":
+      - {system: "CID-10", code: "T14.2"}
+red_flags:
+  - "instabilidade hemodinâmica"
+  - "alteração do nível de consciência"
+  - "sinais de choque"
+rules:
+  disposition_overrides:
+    - when: "any_red_flag"
+      then: {priority: "emergent", disposition: "ER"}
+scores:
+  - name: "RTS"
+    inputs: ["gcs", "sbp", "rr"]
+    thresholds:
+      high: {priority: "emergent", disposition: "ER"}
