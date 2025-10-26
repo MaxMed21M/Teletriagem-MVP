@@ -13,6 +13,10 @@ typing-extensions>=4.12,<5.0
 # Serialização rápida (opcional, mas útil no FastAPI para respostas)
 orjson>=3.10,<4.0
 
+# Processamento de documentos e matemática
+numpy>=1.26,<2.0
+pypdf>=4.2,<5.0
+
 # Carga de variáveis de ambiente (.env)
 python-dotenv>=1.0,<2.0
 
