@@ -1,4 +1,4 @@
-"""Construção de prompts, parsing e guardrails da Teletriagem."""
+"""Prompt building, parsing and safety guardrails for Teletriagem."""
 from __future__ import annotations
 
 import json
@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from .config import settings
 from .schemas import (
     Codes,
+    Disposition,
+    PriorityLevel,
     Reference,
     RiskScore,
     TriageAIResponse,
@@ -41,12 +43,12 @@ def _compact_dict(data: Dict[str, Any]) -> str:
 
 def normalize_request(payload: TriageRequest) -> Dict[str, Any]:
     vitals = payload.vitals or VitalSigns()
-    vitals_dict = {k: v for k, v in vitals.model_dump().items() if v is not None}
+    vitals_dict = {k: v for k, v in vitals.model_dump(mode="json").items() if v is not None}
     normalized = {
         "patient": {
             "name": payload.patient_name or "Não informado",
             "age": payload.age,
-            "sex": payload.sex or "unknown",
+            "sex": (payload.sex or "unknown"),
         },
         "complaint": payload.complaint.strip(),
         "history": payload.history or "",
@@ -118,6 +120,11 @@ def _bump_risk(response: TriageAIResponse, minimum: int) -> TriageAIResponse:
     return response.model_copy(update={"risk_score": new_score})
 
 
+def _ensure_action(result: TriageAIResponse, action: str) -> TriageAIResponse:
+    actions = list(dict.fromkeys([*result.recommended_actions, action]))
+    return result.model_copy(update={"recommended_actions": actions})
+
+
 def apply_guardrails(response: TriageAIResponse, payload: TriageRequest) -> Tuple[TriageAIResponse, List[str]]:
     guardrails: List[str] = []
     result = _ensure_validation_timestamp(response)
@@ -126,21 +133,10 @@ def apply_guardrails(response: TriageAIResponse, payload: TriageRequest) -> Tupl
     spo2 = vitals.spo2
     if spo2 is not None and spo2 < 92:
         guardrails.append("SpO2 abaixo de 92% força prioridade emergent")
-        actions = list(
-            dict.fromkeys(
-                [
-                    *result.recommended_actions,
-                    "Encaminhar imediatamente para emergência devido à baixa saturação.",
-                ]
-            )
-        )
         result = result.model_copy(
-            update={
-                "priority": "emergent",
-                "disposition": "ER",
-                "recommended_actions": actions,
-            }
+            update={"priority": "emergent", "disposition": "hospital"},
         )
+        result = _ensure_action(result, "Encaminhar imediatamente para emergência devido à baixa saturação.")
         result = _bump_risk(result, 85)
 
     text_blob = " ".join(
@@ -160,20 +156,10 @@ def apply_guardrails(response: TriageAIResponse, payload: TriageRequest) -> Tupl
         and hr > 100
     ):
         guardrails.append("Quadro compatível com dor torácica + sudorese + FC>100")
-        actions = list(
-            dict.fromkeys(
-                [
-                    *result.recommended_actions,
-                    "Atendimento imediato em pronto-socorro para descartar síndrome coronariana aguda.",
-                ]
-            )
-        )
-        result = result.model_copy(
-            update={
-                "priority": "emergent",
-                "disposition": "ER",
-                "recommended_actions": actions,
-            }
+        result = result.model_copy(update={"priority": "emergent", "disposition": "hospital"})
+        result = _ensure_action(
+            result,
+            "Atendimento imediato em pronto-socorro para descartar síndrome coronariana aguda.",
         )
         result = _bump_risk(result, 90)
 
@@ -198,26 +184,49 @@ def ensure_references(response: TriageAIResponse, chunks: Iterable[Dict[str, Any
         if len(generated) >= 3:
             break
     if not generated:
-        return response
+        generated.append(Reference(source="Protocolo interno", guideline="Fallback de segurança", year=datetime.utcnow().year))
     return response.model_copy(update={"references": generated})
 
 
-def fallback_response() -> TriageAIResponse:
+def detect_critical_signs(payload: TriageRequest) -> bool:
+    vitals = payload.vitals or VitalSigns()
+    if vitals.spo2 is not None and vitals.spo2 < 92:
+        return True
+    if vitals.heart_rate is not None and vitals.heart_rate > 120 and "dor" in payload.complaint.lower():
+        return True
+    additional = (payload.additional_context or "").lower()
+    if "lactente" in additional or "menos de 3 meses" in additional:
+        if payload.age is not None and payload.age < 1:
+            return True
+    return False
+
+
+def fallback_response(*, force_priority: PriorityLevel | None = None, rationale: str | None = None) -> TriageAIResponse:
     ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    priority = force_priority or "urgent"
+    disposition: Disposition
+    if priority == "emergent":
+        disposition = "hospital"
+    else:
+        disposition = "urgent_care" if priority == "urgent" else "primary_care"
+    rationale_msg = rationale or "Fallback seguro ativado"
     return TriageAIResponse(
-        priority="urgent",
-        risk_score=RiskScore(value=65, rationale="Fallback seguro ativado"),
+        priority=priority,
+        risk_score=RiskScore(value=85 if priority == "emergent" else 65, rationale=rationale_msg),
         red_flags=[],
         missing_info_questions=[],
         probable_causes=[],
         differentials=[],
-        recommended_actions=["Avaliação presencial o quanto antes"],
-        disposition="Same-day clinic",
-        patient_education=["Manter sinais de alarme e procurar pronto atendimento se piorar."],
-        return_precautions=["Retornar imediatamente se dor torácica, dispneia ou febre alta."],
+        recommended_actions=[
+            "Encaminhar avaliação presencial imediata" if priority == "emergent" else "Avaliação clínica breve",
+        ],
+        disposition=str(disposition),
+        patient_education=["Monitorar sintomas e retornar se houver piora."],
+        return_precautions=["Procurar emergência se surgirem sinais de alarme."],
         codes=Codes(),
         references=[],
         version=settings.prompt_version,
+        rationale=rationale_msg,
         validation_timestamp=ts,
     )
 
@@ -227,6 +236,7 @@ __all__ = [
     "build_prompt",
     "build_query",
     "build_repair_prompt",
+    "detect_critical_signs",
     "fallback_response",
     "normalize_request",
     "parse_model_response",
