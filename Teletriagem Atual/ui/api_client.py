@@ -1,14 +1,13 @@
-"""Small helper for the Streamlit UI to interact with the FastAPI backend."""
 from __future__ import annotations
 
 import atexit
 from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict
 
 import httpx
 
 DEFAULT_BASE = "http://127.0.0.1:8000"
-_CLIENTS: Dict[Tuple[str, int], httpx.Client] = {}
+_CLIENTS: dict[str, httpx.Client] = {}
 
 
 @lru_cache(maxsize=1)
@@ -16,42 +15,42 @@ def default_api_base() -> str:
     return DEFAULT_BASE
 
 
-def _client(base_url: str, timeout: float) -> httpx.Client:
-    key = (base_url, int(timeout * 1000))
-    client = _CLIENTS.get(key)
+def _client(base_url: str) -> httpx.Client:
+    base = base_url.rstrip("/")
+    client = _CLIENTS.get(base)
     if client is None:
         client = httpx.Client(
-            base_url=base_url,
-            timeout=httpx.Timeout(timeout),
+            base_url=base,
+            timeout=httpx.Timeout(connect=5.0, read=90.0, write=30.0, pool=30.0),
             headers={"Accept": "application/json"},
-            http2=False,
         )
-        _CLIENTS[key] = client
+        _CLIENTS[base] = client
     return client
 
 
-def list_triages(base_url: str, *, limit: int = 50, source: Optional[str] = None) -> list[Dict[str, Any]]:
-    params: Dict[str, Any] = {"limit": limit}
-    if source:
-        params["source"] = source
-    resp = _client(base_url, timeout=15.0).get("/api/triage/", params=params)
+def perform_triage(base_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    client = _client(base_url)
+    resp = client.post("/api/triage", json=payload)
     resp.raise_for_status()
     return resp.json()
 
 
-def create_triage(base_url: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    resp = _client(base_url, timeout=15.0).post("/api/triage/", json=data)
+def send_feedback(base_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    client = _client(base_url)
+    resp = client.post("/api/triage/feedback", json=payload)
     resp.raise_for_status()
     return resp.json()
 
 
-def request_ai_triage(base_url: str, data: Dict[str, Any]) -> httpx.Response:
-    client = _client(base_url, timeout=60.0)
-    return client.post("/api/triage/ai", json=data)
+def healthz(base_url: str) -> Dict[str, Any]:
+    client = _client(base_url)
+    resp = client.get("/healthz")
+    resp.raise_for_status()
+    return resp.json()
 
 
 @atexit.register
-def _close_clients() -> None:
+def _shutdown_clients() -> None:
     for client in _CLIENTS.values():
         try:
             client.close()

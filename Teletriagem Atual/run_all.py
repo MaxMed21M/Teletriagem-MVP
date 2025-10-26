@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     print("▶️  Iniciando FastAPI (uvicorn)...")
     api_proc = start_process(UVICORN_CMD)
 
-    if wait_for_http(f"{API_BASE.rstrip('/')}/health", timeout=60.0, expect_json=True):
+    if wait_for_http(f"{API_BASE.rstrip('/')}/healthz", timeout=60.0, expect_json=True):
         print(f"✅ API disponível em {API_BASE.rstrip('/')}")
     else:
         print("❌ API não respondeu ao health check dentro do timeout.")

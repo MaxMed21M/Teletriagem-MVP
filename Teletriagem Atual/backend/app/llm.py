@@ -1,235 +1,122 @@
-"""Asynchronous helpers to talk to the configured language model provider."""
+"""Integração assíncrona com provedores LLM (Ollama focado)."""
 from __future__ import annotations
 
 import asyncio
-import os
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from collections import deque
+from typing import Any, Deque, Dict
 
 import httpx
-from dotenv import load_dotenv
 from fastapi import HTTPException, status
 
-load_dotenv()
+from .config import settings
 
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, default))
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, default))
-    except ValueError:
-        return default
-
-
-@lru_cache(maxsize=1)
-def current_provider() -> str:
-    provider = (os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
-    return provider or "ollama"
-
-
-@lru_cache(maxsize=1)
-def current_model() -> str:
-    model = (os.getenv("LLM_MODEL") or "").strip()
-    if model:
-        return model
-    provider = current_provider()
-    if provider == "ollama":
-        return "qwen3b_q4km:latest"
-    if provider == "openai":
-        return "gpt-4o-mini"
-    if provider == "openrouter":
-        return "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    return "qwen3b_q4km:latest"
-
-
-def _ollama_url() -> str:
-    return (os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/")
-
-
-_TIMEOUT = httpx.Timeout(
-    connect=_env_float("LLM_CONNECT_TIMEOUT_S", 10.0),
-    read=_env_float("LLM_READ_TIMEOUT_S", 60.0),
-    write=_env_float("LLM_WRITE_TIMEOUT_S", 30.0),
-    pool=_env_float("LLM_POOL_TIMEOUT_S", 30.0),
-)
-
-_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 1)
-_RETRYABLE = {408, 409, 429, 500, 502, 503, 504}
-_BACKOFF_SECONDS = _env_float("LLM_RETRY_BACKOFF_BASE", 0.75)
-
-_CLIENTS: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], httpx.AsyncClient] = {}
+_RATE_LIMIT_WINDOW = 60.0
+_REQUEST_TIMESTAMPS: Deque[float] = deque()
 _CLIENT_LOCK = asyncio.Lock()
+_CLIENT: httpx.AsyncClient | None = None
 
 
-def _client_key(base_url: Optional[str], headers: Optional[Dict[str, str]]) -> Tuple[str, Tuple[Tuple[str, str], ...]]:
-    ordered_headers = tuple(sorted((headers or {}).items()))
-    return (base_url or ""), ordered_headers
-
-
-async def _get_client(base_url: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> httpx.AsyncClient:
-    key = _client_key(base_url, headers)
-    client = _CLIENTS.get(key)
-    if client is not None:
-        return client
+async def _ensure_client() -> httpx.AsyncClient:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     async with _CLIENT_LOCK:
-        client = _CLIENTS.get(key)
-        if client is None:
-            client = httpx.AsyncClient(
-                base_url=base_url,
-                headers=headers,
-                timeout=_TIMEOUT,
-                follow_redirects=True,
+        if _CLIENT is None:
+            _CLIENT = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=30.0),
             )
-            _CLIENTS[key] = client
-    return client
+    return _CLIENT
 
 
-async def _request(
-    method: str,
-    url: str,
-    *,
-    client: httpx.AsyncClient,
-    json: Optional[Dict[str, Any]] = None,
-) -> httpx.Response:
-    last_error: Optional[Exception] = None
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            response = await client.request(method, url, json=json)
-            if response.status_code in _RETRYABLE and attempt < _MAX_RETRIES:
-                await asyncio.sleep(_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            return response
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
-            last_error = exc
-            if attempt < _MAX_RETRIES:
-                await asyncio.sleep(_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            break
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("Falha na requisição ao provedor LLM sem detalhe adicional.")
+def _ollama_base_url() -> str:
+    from os import getenv
+
+    return (getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/")
 
 
-async def _ollama_generate(prompt: str, system: Optional[str], model: Optional[str]) -> str:
-    base_url = _ollama_url()
+async def _enforce_rate_limit() -> None:
+    limit = settings.rate_limit_per_min
+    if limit <= 0:
+        return
+    now = time.monotonic()
+    while _REQUEST_TIMESTAMPS and now - _REQUEST_TIMESTAMPS[0] > _RATE_LIMIT_WINDOW:
+        _REQUEST_TIMESTAMPS.popleft()
+    if len(_REQUEST_TIMESTAMPS) >= limit:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Limite de requisições atingido")
+    _REQUEST_TIMESTAMPS.append(now)
+
+
+async def _ollama_generate(prompt: str, *, system: str | None = None, model: str | None = None) -> str:
+    base_url = _ollama_base_url()
+    client = await _ensure_client()
     payload: Dict[str, Any] = {
-        "model": model or current_model(),
+        "model": model or settings.llm_model,
         "prompt": prompt,
         "stream": False,
+        "options": {
+            "temperature": settings.llm_temperature,
+            "top_p": settings.llm_top_p,
+            "repeat_penalty": settings.llm_repeat_penalty,
+            "num_ctx": settings.llm_num_ctx,
+        },
     }
     if system:
         payload["system"] = system
-    temperature = os.getenv("OLLAMA_TEMPERATURE")
-    top_p = os.getenv("OLLAMA_TOP_P")
-    options: Dict[str, Any] = {}
-    if temperature:
-        try:
-            options["temperature"] = float(temperature)
-        except ValueError:
-            options["temperature"] = temperature
-    if top_p:
-        try:
-            options["top_p"] = float(top_p)
-        except ValueError:
-            options["top_p"] = top_p
-    if options:
-        payload["options"] = options
 
-    client = await _get_client(base_url=base_url)
-    response = await _request("POST", "/api/generate", client=client, json=payload)
+    try:
+        response = await client.post(f"{base_url}/api/generate", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
     if response.is_error:
-        detail = response.text.strip() or "erro desconhecido"
-        raise HTTPException(status_code=response.status_code, detail=f"Ollama: {detail}")
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
     data = response.json()
     text = data.get("response") or data.get("output")
     if not text:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Ollama respondeu sem conteúdo no campo 'response'.",
-        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Resposta vazia do Ollama")
     return str(text)
 
 
-async def llm_generate(prompt: str, *, system: Optional[str] = None, model: Optional[str] = None) -> str:
-    if not prompt.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt vazio.")
+async def llm_generate(prompt: str, *, system: str | None = None, model: str | None = None) -> str:
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt vazio")
 
-    provider = current_provider()
-    if provider == "ollama":
-        return await _ollama_generate(prompt, system, model or current_model())
+    await _enforce_rate_limit()
 
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=f"Provider '{provider}' não implementado neste MVP.",
-    )
+    provider = settings.llm_provider.lower()
+    if provider != "ollama":
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=f"Provider '{provider}' não suportado")
+    return await _ollama_generate(prompt, system=system or settings.system_prompt, model=model)
 
 
 async def ollama_healthcheck() -> Dict[str, Any]:
-    provider = current_provider()
-    model = current_model()
-    base_url = _ollama_url()
-    if provider != "ollama":
-        return {
-            "provider": provider,
-            "model": model,
-            "available": False,
-            "detail": "LLM_PROVIDER não é 'ollama'.",
-        }
-
-    client = await _get_client(base_url=base_url)
+    base_url = _ollama_base_url()
+    client = await _ensure_client()
     try:
-        response = await client.get("/api/tags")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Não foi possível contatar Ollama: {exc}",
-        ) from exc
+        resp = await client.get(f"{base_url}/api/tags")
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    if response.is_error:
-        detail = response.text.strip() or "erro desconhecido"
-        raise HTTPException(status_code=response.status_code, detail=f"Ollama: {detail}")
-
-    payload = response.json()
-    tags = payload.get("models") or payload.get("tags") or []
-    available = False
-    models: List[str] = []  # type: ignore[var-annotated]
-    for entry in tags:
-        name = entry.get("model") or entry.get("name")
-        if not name:
-            continue
-        models.append(name)
-        if name == model:
-            available = True
-
+    payload = resp.json()
+    models = [entry.get("model") or entry.get("name") for entry in payload.get("models", [])]
     return {
-        "provider": provider,
-        "base_url": base_url,
-        "model": model,
-        "available": available,
+        "provider": settings.llm_provider,
+        "model": settings.llm_model,
+        "available": settings.llm_model in models,
         "models": models,
     }
 
 
 async def close_llm_clients() -> None:
-    clients = list(_CLIENTS.values())
-    _CLIENTS.clear()
-    for client in clients:
-        try:
-            await client.aclose()
-        except Exception:
-            pass
+    global _CLIENT
+    client = _CLIENT
+    _CLIENT = None
+    if client is not None:
+        await client.aclose()
 
 
-__all__ = [
-    "close_llm_clients",
-    "current_model",
-    "current_provider",
-    "llm_generate",
-    "ollama_healthcheck",
-]
+__all__ = ["close_llm_clients", "llm_generate", "ollama_healthcheck"]
