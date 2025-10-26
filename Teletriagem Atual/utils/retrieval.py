@@ -1,4 +1,4 @@
-"""Ferramentas de recuperação RAG usando embeddings do Ollama."""
+"""Utilities for lightweight RAG (retrieval-augmented generation) support."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 from backend.app.config import settings
 
@@ -53,7 +53,7 @@ def embed_text_ollama(text: str, *, model: str | None = None) -> List[float]:
 
     cmd = [*_ollama_cmd(), "embed", "-m", model or "nomic-embed-text", text]
     env = os.environ.copy()
-    base_url = os.getenv("OLLAMA_BASE_URL")
+    base_url = os.getenv("OLLAMA_BASE_URL") or settings.ollama_base_url
     if base_url:
         env["OLLAMA_HOST"] = base_url
 
@@ -197,9 +197,33 @@ def build_context(
     return "\n\n".join(parts)
 
 
+def rag_status() -> Dict[str, Any]:
+    """Retorna métricas leves sobre o índice RAG atual."""
+
+    db_path = Path(settings.rag_db_path)
+    exists = db_path.exists()
+    docs = 0
+    if exists:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(1) FROM kb_docs")
+                row = cursor.fetchone()
+                docs = int(row[0]) if row and row[0] is not None else 0
+        except Exception as exc:  # pragma: no cover - leitura de KB opcional
+            logger.debug("Falha ao consultar KB: %s", exc)
+            exists = False
+            docs = 0
+    else:
+        directory = Path(settings.rag_docs_path)
+        if directory.exists():
+            docs = sum(1 for item in directory.glob("**/*") if item.is_file())
+    return {"index_exists": exists, "docs": docs}
+
+
 __all__ = [
     "RetrievedChunk",
     "build_context",
     "embed_text_ollama",
+    "rag_status",
     "retrieve_topk",
 ]

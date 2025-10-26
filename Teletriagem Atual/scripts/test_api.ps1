@@ -2,8 +2,8 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:8000"
 )
 
-Write-Host "===> GET /health" -ForegroundColor Cyan
-$health = Invoke-RestMethod -Method Get -Uri "$BaseUrl/health"
+Write-Host "===> GET /healthz" -ForegroundColor Cyan
+$health = Invoke-RestMethod -Method Get -Uri "$BaseUrl/healthz"
 $health | ConvertTo-Json -Depth 4
 
 Write-Host "===> POST /api/triage/" -ForegroundColor Cyan
