@@ -1,0 +1,11 @@
+{
+  "systolic_bp": {"threshold": 90, "score": 40},
+  "spo2": {"threshold": 94, "score": 30},
+  "heart_rate": {"threshold": 120, "score": 20},
+  "respiratory_rate": {"threshold": 30, "score": 20},
+  "age_critical": {
+    "age": 65,
+    "score": 15,
+    "symptoms": ["dor toracica", "dispneia", "confusao"]
+  }
+}

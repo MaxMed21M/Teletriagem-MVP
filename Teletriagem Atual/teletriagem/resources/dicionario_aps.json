@@ -1,0 +1,12 @@
+{
+  "dispneia": ["falta de ar", "dificuldade para respirar"],
+  "dor toracica": ["dor no peito", "dor torácica"],
+  "confusao": ["desorientado", "confusão"],
+  "febre": ["temperatura alta"],
+  "cefaleia": ["dor de cabeça"],
+  "hipotensao": ["pressao baixa", "hipotensão"],
+  "hipertensao": ["pressao alta", "hipertensão"],
+  "sincope": ["desmaio", "perda de consciência"],
+  "taquicardia": ["batimento acelerado"],
+  "dispneia intensa": ["falta de ar grave"]
+}
